@@ -48,7 +48,7 @@ def png_frames_to_file(frames_dir, output_path):
     with open(output_path, "wb") as f:
         f.write(file_bytes)
 
-    print(f"✅ Restored file to: {output_path}")
+    print(f"Restored file to: {output_path}")
 
 
 png_frames_to_file("frames/", "decoded_software.zip")
