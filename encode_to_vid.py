@@ -1,69 +1,102 @@
-import cv2
-import numpy as np
-import math
-import struct
 import os
+import math
+import cv2
+import struct
+import numpy as np
+import zstandard as zstd
+import subprocess
+
+FRAME_SIZE = (256, 256) 
 
 
-def zip_to_video(zip_path, video_path, frame_size=(256, 256), fps=1):
-    with open(zip_path, "rb") as f:
-        data = f.read()
-
-    original_size = len(data)
-    print(f"Original file size: {original_size} bytes")
-
-    # Header: Store file size in first 4 pixels (12 bytes)
-    header = struct.pack(">Q", original_size)  # 8 bytes, big-endian
-    header += b"\x00" * 4  # pad to 12 bytes
-
-    data = header + data
-    padding = (3 - len(data) % 3) % 3
-    data += b"\x00" * padding
-
-    pixels = np.frombuffer(data, dtype=np.uint8).reshape(-1, 3)
-    total_pixels = frame_size[0] * frame_size[1]
-    num_frames = math.ceil(len(pixels) / total_pixels)
-
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    out = cv2.VideoWriter(video_path, fourcc, fps, frame_size)
-
-    for i in range(num_frames):
-        chunk = pixels[i * total_pixels : (i + 1) * total_pixels]
-        padded = np.zeros((total_pixels, 3), dtype=np.uint8)
-        padded[: len(chunk)] = chunk
-        frame = padded.reshape((frame_size[1], frame_size[0], 3))
-        out.write(frame)
-
-    out.release()
-    print(f"Encoded ZIP into video: {video_path}")
+def compress_file(input_file, compressed_path):
+    with open(input_file, "rb") as f_in, open(compressed_path, "wb") as f_out:
+        compressor = zstd.ZstdCompressor()
+        f_out.write(compressor.compress(f_in.read()))
 
 
-def file_to_png_frames(input_path, output_dir, frame_size=(256, 256)):
-    os.makedirs(output_dir, exist_ok=True)
-
+def file_to_png_frames(input_path, frame_dir):
     with open(input_path, "rb") as f:
         data = f.read()
 
     original_size = len(data)
-    header = struct.pack(">Q", original_size) + b"\x00" * 4  # 12 bytes
+    header = struct.pack(">Q", original_size) + b"\x00" * 4
     data = header + data
-    padding = (3 - len(data) % 3) % 3
-    data += b"\x00" * padding
+    data += b"\x00" * ((3 - len(data) % 3) % 3)
 
     pixels = np.frombuffer(data, dtype=np.uint8).reshape(-1, 3)
-    total_pixels = frame_size[0] * frame_size[1]
+    total_pixels = FRAME_SIZE[0] * FRAME_SIZE[1]
     num_frames = math.ceil(len(pixels) / total_pixels)
+
+    os.makedirs(frame_dir, exist_ok=True)
 
     for i in range(num_frames):
         chunk = pixels[i * total_pixels : (i + 1) * total_pixels]
         padded = np.zeros((total_pixels, 3), dtype=np.uint8)
         padded[: len(chunk)] = chunk
-        frame = padded.reshape((frame_size[1], frame_size[0], 3))
-        filename = os.path.join(output_dir, f"frame_{i:04d}.png")
-        cv2.imwrite(filename, frame)
+        frame = padded.reshape((FRAME_SIZE[1], FRAME_SIZE[0], 3))
+        cv2.imwrite(os.path.join(frame_dir, f"frame_{i:04d}.png"), frame)
 
-    print(f"Saved {num_frames} PNG frames to {output_dir}")
+    return num_frames
 
 
-file_to_png_frames("test_zip.zip", "frames/")
-# zip_to_video("software.zip", "zip_encoded_video.mp4v")
+def encode_frames_to_video(frame_dir, output_video):
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-framerate",
+            "30",
+            "-i",
+            os.path.join(frame_dir, "frame_%04d.png"),
+            "-c:v",
+            "libx264rgb",
+            "-crf",
+            "0",
+            "-preset",
+            "slow",
+            output_video,
+        ]
+        # [
+        #     "ffmpeg",
+        #     "-y",
+        #     "-framerate",
+        #     "1",
+        #     "-i",
+        #     os.path.join(frame_dir, "frame_%04d.png"),
+        #     "-c:v",
+        #     "libx264rgb",
+        #     "-crf",
+        #     "0",
+        #     "-preset",
+        #     "ultrafast",
+        #     output_video,
+        # ]
+    )
+
+
+def zip_to_video(input_file, output_video, tmp_dir="tmp"):
+    compressed_path = os.path.join(tmp_dir, "compressed.zst")
+    frame_dir = os.path.join(tmp_dir, "frames")
+
+    os.makedirs(tmp_dir, exist_ok=True)
+
+    compress_file(input_file, compressed_path)
+
+    file_to_png_frames(compressed_path, frame_dir)
+
+    encode_frames_to_video(frame_dir, output_video)
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Convert a file to a video.")
+    parser.add_argument("input_file", help="Path to the input file to encode.")
+    parser.add_argument("output_video", help="Path to the output video file.")
+    parser.add_argument("--tmp_dir", default="tmp", help="Temporary directory for processing.")
+
+    args = parser.parse_args()
+
+    zip_to_video(args.input_file, args.output_video, args.tmp_dir)
+    print(f"Video created at: {args.output_video}")
